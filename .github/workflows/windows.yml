@@ -21,6 +21,8 @@ jobs:
         include:
           - os: windows-11-arm
             engine: pwsh
+    env:
+      REPORT_FILE: aegisguard-${{ matrix.os }}-${{ matrix.engine }}-attempt-${{ github.run_attempt }}.html
     steps:
       - uses: actions/checkout@v6
         with:
@@ -29,5 +31,21 @@ jobs:
         shell: cmd
         run: ${{ matrix.engine }} -NoProfile -NonInteractive -File tests\BitLocker.ps1
       - name: Run the comprehensive audit and check its report
+        id: smoke
         shell: cmd
-        run: ${{ matrix.engine }} -NoProfile -NonInteractive -File tests\WindowsSmoke.ps1
+        run: ${{ matrix.engine }} -NoProfile -NonInteractive -File tests\WindowsSmoke.ps1 -ReportPath "%RUNNER_TEMP%\%REPORT_FILE%"
+      - name: Upload the HTML report
+        id: report
+        if: ${{ !cancelled() && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ runner.temp }}/${{ env.REPORT_FILE }}
+          archive: false
+          if-no-files-found: warn
+      - name: Link the HTML report in the run summary
+        if: ${{ !cancelled() && steps.report.outputs.artifact-url != '' }}
+        shell: pwsh
+        env:
+          REPORT_URL: ${{ steps.report.outputs.artifact-url }}
+        run: |
+          "[Open full HTML report]($env:REPORT_URL)" >> $env:GITHUB_STEP_SUMMARY

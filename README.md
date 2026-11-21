@@ -57,7 +57,9 @@ For example, a fully encrypted system drive with protection off yields `FAIL`. A
 
 Push a branch or open a pull request to run **Windows audit tests** on GitHub Actions. Once the workflow is on the default branch, you can also select **Actions → Windows audit tests → Run workflow**. Select a job in the run to see the PowerShell version, scan progress, and test result.
 
-The workflow exercises Windows PowerShell 5.1 and PowerShell 7 on Windows Server 2025, plus PowerShell 7 on Windows 11 Arm64. Each job tests BitLocker verdicts against known inputs, then runs a Comprehensive audit without the optional simulations. It verifies the Windows product name, all 17 posture results, and the report summary before deleting the temporary HTML.
+The workflow exercises Windows PowerShell 5.1 and PowerShell 7 on Windows Server 2025, plus PowerShell 7 on Windows 11 Arm64. Each job tests BitLocker verdicts against known inputs, then runs a Comprehensive audit without the optional simulations. It verifies the Windows product name, all 17 posture results, and the report summary.
+
+In **Actions → Windows audit tests**, open a run and select **Summary**. Each completed audit shows its pass count and a **View individual checks** table. Select **Open full HTML report** in the corresponding job summary for the inventory, evidence, and recommendations. The same HTML file is available under **Artifacts**, labeled by Windows image, PowerShell engine, and run attempt. Sign in to GitHub to access the artifact. If your browser downloads the file, open it locally.
 
 On macOS or Linux with PowerShell installed, run the same BitLocker examples locally. They supply simulated volume states and collection errors.
 
