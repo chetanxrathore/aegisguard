@@ -11,22 +11,34 @@
 
 .EXAMPLE
     .\AegisGuard.ps1 -employee-id "emp-123"
+
+.EXAMPLE
+    .\AegisGuard.ps1 -CheckId SEC-012
 #>
 
-#Requires -RunAsAdministrator
-
+[CmdletBinding(DefaultParameterSetName='Audit')]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName='Audit', Position=0)]
     [Alias('employee-id')]
     [ValidateNotNullOrEmpty()]
     [string]$EmployeeId,
 
+    [Parameter(ParameterSetName='Audit', Position=1)]
     [string]$OutputPath = "",
 
+    [Parameter(ParameterSetName='Audit', Position=2)]
     [ValidateSet("Basic", "Standard", "Comprehensive")]
     [string]$ScanDepth = "Comprehensive",
 
-    [switch]$IncludePenTest = $true
+    [Parameter(ParameterSetName='Audit')]
+    [switch]$IncludePenTest = $true,
+
+    [Parameter(ParameterSetName='Audit')]
+    [switch]$NoPrompt,
+
+    [Parameter(Mandatory = $true, ParameterSetName='Recheck')]
+    [ValidateSet('SEC-012')]
+    [string]$CheckId
 )
 
 #region Branding
@@ -115,6 +127,64 @@ function Get-LastHotfixSafe {
     }
 }
 
+function Get-BitLockerFinding {
+    $drive = $env:SystemDrive
+    $volume = $null
+    $reason = ''
+    try {
+        if (-not $drive) {
+            $reason = 'The Windows system drive is unavailable.'
+        } else {
+            $volume = Get-BitLockerVolume -MountPoint $drive -ErrorAction Stop
+            if (-not $volume) { $reason = 'The collector returned no volume.' }
+        }
+    } catch [System.Management.Automation.CommandNotFoundException] {
+        $reason = 'The BitLocker cmdlet is unavailable.'
+    } catch {
+        $reason = "The BitLocker query failed. $($_.Exception.Message)"
+    }
+
+    $encryption = [string]$volume.VolumeStatus
+    $protection = [string]$volume.ProtectionStatus
+    $result = 'UNKNOWN'
+    $recommendation = 'Verify that the BitLocker module is available and that the account can read this volume. Then rerun SEC-012.'
+    $incompleteStates = @('FullyDecrypted', 'EncryptionInProgress', 'DecryptionInProgress', 'EncryptionPaused', 'DecryptionPaused')
+    if ($encryption -eq 'FullyEncrypted' -and $protection -eq 'On') {
+        $result = 'PASS'
+        $recommendation = 'No change required.'
+    } elseif ($protection -eq 'Off' -or $encryption -in $incompleteStates) {
+        $result = 'FAIL'
+        $recommendation = if ($encryption -eq 'FullyEncrypted') {
+            'Check for planned maintenance. Resume BitLocker protection when appropriate, then rerun SEC-012.'
+        } else {
+            'Review encryption progress and recovery key backup. Verify that encryption completes and protection is on, then rerun SEC-012.'
+        }
+    } elseif (-not $reason) {
+        $reason = 'The collector returned incomplete or unrecognized status values.'
+    }
+
+    $observations = @()
+    if ($drive) { $observations += "System drive $drive" }
+    if ($encryption) { $observations += "VolumeStatus=$encryption" }
+    if ($protection) { $observations += "ProtectionStatus=$protection" }
+    $details = (@('Get-BitLockerVolume') + $observations + 'Expected FullyEncrypted and On') -join '. '
+    $details += '.'
+    if ($reason) { $details += " $reason" }
+    [PSCustomObject]@{
+        ID='SEC-012'
+        Check='Disk Encryption (BitLocker)'
+        Result=$result
+        Severity='High'
+        Details=$details
+        MountPoint=$drive
+        VolumeStatus=$encryption
+        ProtectionStatus=$protection
+        ISO27001='A.10.1.1'
+        NISTCSF='PR.DS-1'
+        Recommendation=$recommendation
+    }
+}
+
 function Get-LogoDataUri {
     param([string]$Url)
 
@@ -135,6 +205,11 @@ function Get-LogoDataUri {
 #endregion
 
 #region Global Variables
+
+if ($PSCmdlet.ParameterSetName -eq 'Recheck') {
+    Get-BitLockerFinding
+    return
+}
 
 $EmployeeIdSafe = ($EmployeeId -replace '[\\\/\:\*\?\"\<\>\|]', '_').Trim()
 if ([string]::IsNullOrWhiteSpace($EmployeeIdSafe)) { $EmployeeIdSafe = "UNKNOWN" }
@@ -178,17 +253,17 @@ function Get-HardwareInventory {
 
         $disks = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
         foreach ($disk in $disks) {
-            $encryptionStatus = "Unknown"
+            $protectionStatus = "Unknown"
             try {
                 if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
                     $bitlocker = Get-BitLockerVolume -MountPoint $disk.DeviceID -ErrorAction SilentlyContinue
-                    if ($bitlocker) { $encryptionStatus = $bitlocker.ProtectionStatus }
+                    if ($bitlocker) { $protectionStatus = $bitlocker.ProtectionStatus }
                 }
             } catch { }
             $inventory += [PSCustomObject]@{
                 Category = "Disk"
                 Property = "Drive $($disk.DeviceID)"
-                Value    = "Size: $([math]::Round($disk.Size/1GB,2)) GB, Free: $([math]::Round($disk.FreeSpace/1GB,2)) GB, Encryption: $encryptionStatus"
+                Value    = "Size: $([math]::Round($disk.Size/1GB,2)) GB, Free: $([math]::Round($disk.FreeSpace/1GB,2)) GB, BitLocker protection: $protectionStatus"
             }
         }
 
@@ -632,28 +707,11 @@ function Invoke-SecurityChecks {
 
         Write-Host "  Checking BitLocker Encryption..." -ForegroundColor Gray
         $script:TotalChecks++
-        $bitlockerStatus = "Not Available"
-        $bitlockerResult = $false
-        try {
-            if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
-                $bitlocker = Get-BitLockerVolume -MountPoint "C:" -ErrorAction SilentlyContinue
-                if ($bitlocker) {
-                    $bitlockerStatus = $bitlocker.VolumeStatus
-                    $bitlockerResult = $bitlocker.VolumeStatus -eq "FullyEncrypted"
-                }
-            }
-        } catch { }
-        if (-not $bitlockerResult) { $script:VulnerabilityScore -= 8 }
-        if ($bitlockerResult) { $script:PassedChecks++ } else { $script:FailedChecks++ }
-
-        $checks += [PSCustomObject]@{
-            ID="SEC-012"; Check="Disk Encryption (BitLocker)"
-            Result=(Iif $bitlockerResult "PASS" "FAIL")
-            Severity="High"
-            Details="Status: $bitlockerStatus"
-            ISO27001="A.10.1.1"
-            NISTCSF="PR.DS-1"
-            Recommendation="Enable BitLocker and store recovery keys securely."
+        $bitlocker = Get-BitLockerFinding
+        $checks += $bitlocker
+        switch ($bitlocker.Result) {
+            'PASS' { $script:PassedChecks++ }
+            'FAIL' { $script:FailedChecks++; $script:VulnerabilityScore -= 8 }
         }
 
         Write-Host "  Checking Antivirus Protection..." -ForegroundColor Gray
@@ -1040,7 +1098,9 @@ function New-SecurityReport {
         [string]$EmployeeId
     )
 
-    $complianceScore = if ($TotalChecks -gt 0) { [math]::Round(($PassedChecks / $TotalChecks) * 100, 0) } else { 0 }
+    $assessedChecks = $PassedChecks + $FailedChecks
+    $unknownChecks = $TotalChecks - $assessedChecks
+    $passRate = if ($assessedChecks -gt 0) { [math]::Round(($PassedChecks / $assessedChecks) * 100, 0) } else { 0 }
     $securityScore = $VulnerabilityScore
 
     $securityRating = if ($securityScore -ge 90) { "Excellent" }
@@ -1073,7 +1133,7 @@ function New-SecurityReport {
     }
 
     $securityDonut  = New-DonutSvg -Percent $securityScore  -Label "Security Score"
-    $complianceDonut = New-DonutSvg -Percent $complianceScore -Label "Compliance"
+    $passRateDonut = New-DonutSvg -Percent $passRate -Label "Check pass rate"
 
     $html = @"
 <!DOCTYPE html>
@@ -1098,6 +1158,7 @@ function New-SecurityReport {
         .PASS { color: #27ae60; font-weight: bold; }
         .FAIL { color: #e74c3c; font-weight: bold; }
         .PARTIAL { color: #f39c12; font-weight: bold; }
+        .UNKNOWN { color: #475569; font-weight: bold; }
         .badge { display: inline-block; padding: 2px 10px; border-radius: 14px; font-size: 12px; font-weight: 700; }
         .badge-high { background: #ffebee; color: #c62828; }
         .badge-medium { background: #fff3e0; color: #ef6c00; }
@@ -1136,11 +1197,12 @@ function New-SecurityReport {
         <div class="summary-grid">
             <div>
                 <p><strong>Employee ID:</strong> $(HtmlEncode $EmployeeId) | <strong>Scan Depth:</strong> $(HtmlEncode $ScanDepth) | <strong>Pen Test Simulation:</strong> $($IncludePenTest.ToString().ToUpper())</p>
-                <p><strong>Security Score:</strong> $securityScore/100 ($securityRating) | <strong>Compliance:</strong> $PassedChecks/$TotalChecks checks passed ($complianceScore%)</p>
+                <p><strong>Security Score:</strong> $securityScore/100 ($securityRating) | <strong>Check pass rate:</strong> $PassedChecks/$assessedChecks assessed checks passed ($passRate%)</p>
+                <p><strong>Coverage:</strong> $assessedChecks/$TotalChecks selected checks assessed ($unknownChecks unknown)</p>
             </div>
             <div class="charts">
                 $securityDonut
-                $complianceDonut
+                $passRateDonut
             </div>
         </div>
     </div>
@@ -1284,9 +1346,11 @@ Write-Host "Report saved to: $OutputPath" -ForegroundColor Green
 Write-Host "Security Score: $VulnerabilityScore/100" -ForegroundColor Green
 Write-Host ""
 
-$openReport = Read-Host "Open report in browser? (Y/N)"
-if ($openReport -match '^(Y|y)$') {
-    try { Invoke-Item $OutputPath } catch { Write-Host "Open manually: $OutputPath" -ForegroundColor Yellow }
+if (-not $NoPrompt) {
+    $openReport = Read-Host "Open report in browser? (Y/N)"
+    if ($openReport -match '^(Y|y)$') {
+        try { Invoke-Item $OutputPath } catch { Write-Host "Open manually: $OutputPath" -ForegroundColor Yellow }
+    }
 }
 
 #endregion

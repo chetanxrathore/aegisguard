@@ -41,3 +41,32 @@
 ```powershell
 # From repo root:
 powershell -ExecutionPolicy Bypass -File .\src\AegisGuard.ps1 -employee-id "EMP-10293"
+```
+
+### Recheck BitLocker after a change
+
+Run the same control used by Standard and Comprehensive audits directly on the Windows endpoint. The command returns one PowerShell object and requires no employee ID.
+
+```powershell
+.\src\AegisGuard.ps1 -CheckId SEC-012 | Select-Object MountPoint, VolumeStatus, ProtectionStatus, Result, Details
+```
+
+For example, a fully encrypted system drive with protection off yields `FAIL`. After planned maintenance, rerun the command to verify that protection is back on and the result is `PASS`. A missing cmdlet or a denied query yields `UNKNOWN` with a reason. The HTML summary shows how many selected checks were assessed. An unknown BitLocker result reduces coverage and carries no score penalty.
+
+### Testing from macOS or Linux
+
+Push a branch or open a pull request to run **Windows audit tests** on GitHub Actions. Once the workflow is on the default branch, you can also select **Actions → Windows audit tests → Run workflow**. Select a job in the run to see the PowerShell version, scan progress, and test result.
+
+The workflow exercises Windows PowerShell 5.1 and PowerShell 7 on Windows Server 2025, plus PowerShell 7 on Windows 11 Arm64. Each job tests BitLocker verdicts against known inputs, then runs a Comprehensive audit without the optional simulations. It verifies the Windows product name, all 17 posture results, and the report summary before deleting the temporary HTML.
+
+On macOS or Linux with PowerShell installed, run the same BitLocker examples locally. They supply simulated volume states and collection errors.
+
+```sh
+pwsh -NoProfile -File ./tests/BitLocker.ps1
+```
+
+To run the same smoke test from an elevated Windows checkout:
+
+```powershell
+.\tests\WindowsSmoke.ps1
+```

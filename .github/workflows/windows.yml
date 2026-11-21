@@ -1,0 +1,33 @@
+name: Windows audit tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: ${{ matrix.os }} / ${{ matrix.engine }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025]
+        engine: [powershell, pwsh]
+        include:
+          - os: windows-11-arm
+            engine: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test BitLocker verdicts against known inputs
+        shell: cmd
+        run: ${{ matrix.engine }} -NoProfile -NonInteractive -File tests\BitLocker.ps1
+      - name: Run the comprehensive audit and check its report
+        shell: cmd
+        run: ${{ matrix.engine }} -NoProfile -NonInteractive -File tests\WindowsSmoke.ps1
